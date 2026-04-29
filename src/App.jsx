@@ -4,9 +4,30 @@ const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6'
 const DEFAULT_OPENAI_MODEL = 'gpt-4o'
 const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash'
 
-/** Set at dev/build from .env: AI_PROVIDER / VITE_AI_PROVIDER, or first non-empty API key (Anthropic → OpenAI → Gemini). */
+/**
+ * Provider: VITE_AI_PROVIDER (works on Vercel without API keys at build time) wins;
+ * else build-time __APP_AI_PROVIDER__ from .env keys during `vite build`.
+ */
 function getProvider() {
+  const v = import.meta.env.VITE_AI_PROVIDER?.trim().toLowerCase()
+  if (v && ['anthropic', 'openai', 'gemini'].includes(v)) return v
   return __APP_AI_PROVIDER__.toLowerCase()
+}
+
+function isProdDeployment() {
+  return import.meta.env.PROD
+}
+
+function anthropicEndpoint() {
+  const custom = import.meta.env.VITE_ANTHROPIC_MESSAGES_URL?.trim()
+  if (custom) return custom
+  return isProdDeployment() ? '/api/anthropic' : '/anthropic-proxy/v1/messages'
+}
+
+function openaiEndpoint() {
+  const custom = import.meta.env.VITE_OPENAI_CHAT_URL?.trim()
+  if (custom) return custom
+  return isProdDeployment() ? '/api/openai' : '/openai-proxy/v1/chat/completions'
 }
 
 function anthropicBlocksToText(data) {
@@ -24,7 +45,7 @@ async function completeText(userPrompt, options = {}) {
 
   if (provider === 'openai') {
     const model = import.meta.env.VITE_OPENAI_MODEL || DEFAULT_OPENAI_MODEL
-    const url = import.meta.env.VITE_OPENAI_CHAT_URL?.trim() || '/openai-proxy/v1/chat/completions'
+    const url = openaiEndpoint()
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -46,16 +67,24 @@ async function completeText(userPrompt, options = {}) {
 
   if (provider === 'gemini') {
     const model = import.meta.env.VITE_GEMINI_MODEL || DEFAULT_GEMINI_MODEL
+    const custom = import.meta.env.VITE_GEMINI_GENERATE_URL?.trim()
+    const payload = {
+      contents: [{ parts: [{ text: userPrompt }] }],
+      generationConfig: { maxOutputTokens: maxTokens },
+    }
     const url =
-      import.meta.env.VITE_GEMINI_GENERATE_URL?.trim() ||
-      `/gemini-proxy/models/${encodeURIComponent(model)}:generateContent`
+      custom ||
+      (isProdDeployment()
+        ? '/api/gemini'
+        : `/gemini-proxy/models/${encodeURIComponent(model)}:generateContent`)
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: userPrompt }] }],
-        generationConfig: { maxOutputTokens: maxTokens },
-      }),
+      body: JSON.stringify(
+        custom || !isProdDeployment()
+          ? payload
+          : { model, ...payload },
+      ),
     })
     const data = await response.json().catch(() => ({}))
     if (!response.ok) {
@@ -74,7 +103,7 @@ async function completeText(userPrompt, options = {}) {
   }
 
   const model = import.meta.env.VITE_ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL
-  const url = import.meta.env.VITE_ANTHROPIC_MESSAGES_URL?.trim() || '/anthropic-proxy/v1/messages'
+  const url = anthropicEndpoint()
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -289,10 +318,10 @@ Be specific, analytical, and use real venture capital frameworks. Reference actu
     } catch (e) {
       const hint =
         getProvider() === 'openai'
-          ? 'Set OPENAI_API_KEY in .env (provider picks OpenAI when that key is set, or set AI_PROVIDER=openai). Restart npm run dev or npm run preview.'
+          ? 'Local: OPENAI_API_KEY in .env. Vercel: OPENAI_API_KEY in Env Vars + redeploy; set VITE_AI_PROVIDER=openai if needed.'
           : getProvider() === 'gemini'
-            ? 'Set GEMINI_API_KEY in .env (or AI_PROVIDER=gemini). Restart npm run dev or npm run preview — opening dist/index.html directly will not work.'
-            : 'Set ANTHROPIC_API_KEY in .env. Restart npm run dev or npm run preview — proxies only run on the Vite server.'
+            ? 'Local: GEMINI_API_KEY in .env. Vercel: GEMINI_API_KEY in Env Vars + redeploy; set VITE_AI_PROVIDER=gemini if needed.'
+            : 'Local: ANTHROPIC_API_KEY in .env. Vercel: ANTHROPIC_API_KEY in Project → Environment Variables (Production), then Redeploy.'
       setMemo(`Error connecting to AI analyst: ${e.message}. ${hint}`)
     }
     setLoading(false)
